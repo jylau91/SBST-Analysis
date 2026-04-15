@@ -210,8 +210,8 @@
 /* ═══════════════════════════════════════════════════════════════
    CONFIGURATION
 ═══════════════════════════════════════════════════════════════ */
-const CACHE_KEY   = "sgbusmap_v5_data";
-const CACHE_TS    = "sgbusmap_v5_ts";
+const CACHE_KEY   = "sgbusmap_v6_data";
+const CACHE_TS    = "sgbusmap_v6_ts";
 const CACHE_TTL   = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const OPERATORS = {
@@ -523,9 +523,30 @@ function applyFilters() {
   $stats.textContent = `${shown.toLocaleString()} route directions shown`;
 }
 
-function populatePackageFilter(services) {
+function derivePkgOperators(services) {
+  // Count how many services in each package belong to each operator
+  // (uses actual LTA API operator data — no hardcoding needed)
+  const votes = {};
+  for (const svc of Object.values(services)) {
+    if (!svc.pkg || svc.pkg === "Other" || !svc.op) continue;
+    if (!votes[svc.pkg]) votes[svc.pkg] = {};
+    votes[svc.pkg][svc.op] = (votes[svc.pkg][svc.op] || 0) + 1;
+  }
+  const result = {};
+  for (const [pkg, v] of Object.entries(votes)) {
+    result[pkg] = Object.entries(v).sort((a, b) => b[1] - a[1])[0][0];
+  }
+  return result;
+}
+
+function populatePackageFilter(services, pkgOperator, opFilter = "") {
   const sel = document.getElementById("filter-package");
-  const pkgs = [...new Set(Object.values(services).map(s => s.pkg))].sort();
+  while (sel.options.length > 1) sel.remove(1);
+  const pkgs = [...new Set(
+    Object.values(services)
+      .filter(s => s.pkg && s.pkg !== "Other" && (!opFilter || pkgOperator[s.pkg] === opFilter))
+      .map(s => s.pkg)
+  )].sort();
   for (const pkg of pkgs) {
     const opt = document.createElement("option");
     opt.value = pkg;
@@ -546,7 +567,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-function buildSummaryTable(data) {
+function buildSummaryTable(data, pkgOperator) {
   const { stops, services, routes } = data;
 
   const acc = {};
@@ -560,7 +581,8 @@ function buildSummaryTable(data) {
     const op = svc.op;
     if (!acc[op]) continue;
     acc[op].svcs.add(svcNo);
-    if (svc.pkg && svc.pkg !== "Other") acc[op].pkgs.add(svc.pkg);
+    // Only add package to this operator if it's confirmed to belong to them
+    if (svc.pkg && svc.pkg !== "Other" && pkgOperator[svc.pkg] === op) acc[op].pkgs.add(svc.pkg);
 
     // Use direction 1 only for distance (avoid double-counting)
     const dir1Codes = dirMap["1"] || dirMap[1] || Object.values(dirMap)[0] || [];
@@ -625,7 +647,9 @@ async function main() {
 
   setProgress(95, "Rendering map…");
   buildRouteLines(data);
-  populatePackageFilter(data.services);
+
+  const pkgOperator = derivePkgOperators(data.services);
+  populatePackageFilter(data.services, pkgOperator, "");
   applyFilters();
 
   const nSvcs  = Object.keys(data.services).length;
@@ -643,11 +667,14 @@ async function main() {
   setProgress(100, "Done");
   $overlay.style.display = "none";
 
-  buildSummaryTable(data);
+  buildSummaryTable(data, pkgOperator);
 
   // ── Event listeners ──────────────────────────────────────
   document.getElementById("filter-operator").addEventListener("change", e => {
-    currentOpFilter = e.target.value; applyFilters();
+    currentOpFilter = e.target.value;
+    currentPkgFilter = "";
+    populatePackageFilter(data.services, pkgOperator, currentOpFilter);
+    applyFilters();
   });
   document.getElementById("filter-package").addEventListener("change", e => {
     currentPkgFilter = e.target.value; applyFilters();
